@@ -14,13 +14,14 @@ hl7recv/            接收服务包
   hl7.py           层次解析（声明的分隔符、转义、重复/组件/子组件、空 vs 缺失）
   profile.py       限定 profile 表（v2.3.1 / v2.5.1 子集）
   builder.py       结构校验 + 事实模型构建（OBR 组、NTE 归属、重复键合并）
-  store.py         SQLite 持久化（单事务提交、去重、恢复、有界诊断）
+  store.py         SQLite 持久化（单事务提交、去重、恢复、有界诊断、同步位置）
   server.py        TCP 服务（线程每连接、优雅停止、提交后才发 AA）
   ack.py           ACK 构建（AA/AE + 有界 ERR）
   faults.py        确定性故障注入点
   queries.py       查询 API（按消息 / 患者 / 订单，稳定排序）
   cli.py           命令行入口
   audit/           本地数据质量审计（只读、两窗对照、确定性 JSON 报告）
+  sync/            结果订阅发布端 + 分析端副本（页协议、离线升级、游标导入）
 shiftledger/        本地交班对账台账（只读对接接收库，独立 SQLite）
   manifest.py      应收清单流式加载与严格校验（时间按带时区实际时刻比较）
   intake.py        从 messages/results 只读复制不可变事实批次
@@ -34,10 +35,12 @@ refcheck/           独立参考检查程序（不调用产品解析或写库代
   handover_reference.py  交班台账独立重算与逐项枚举核对（不导入对账模块）
 drills/             运行时生成的可复跑合成审计演练与示例策略
   handover_drill.py     交班三工单故事与 20 万/50 万规模合成资料（运行时生成）
+  sync_scale_drill.py   订阅 20 万消息长历史 + 小页近尾追赶演练（运行时生成）
 tests/              单元测试、验收套件、进程退出演练、压力/内存检查
 docs/PROFILE.md     profile 说明（字段表、可空性、去重与提交语义）
 docs/AUDIT.md       审计策略格式、指标口径、报告契约与快照一致性说明
 docs/HANDOVER.md    交班台账清单/裁决接口、归属与销账口径、内存与复跑说明
+docs/SYNC.md        结果订阅页格式、位置/上界语义、离线升级与恢复操作
 ```
 
 ## 运行服务
@@ -134,8 +137,45 @@ python3 -m unittest discover -s tests -v
 - `test_handover_decisions.py`：非法边/双锁/孤儿锁整次拒绝、组合裁决、自动匹配不算人工决定
 - `test_handover_cli.py`：命令行端到端与陈旧版本退出码 5
 - `test_handover_scale.py`：20 万应收/50 万观察分进程峰值 RSS < 256 MiB 与守恒不变量
+- `test_sync_acceptance.py`：订阅两轮追赶故事（空页推进、迟到提交、多 OBR/OBX 逐页对照）
+- `test_sync_upgrade.py`：离线升级中断重跑、重启/VACUUM 后重取字节一致、上界不可替换
+- `test_sync_recovery.py`：接收提交→发布与导入事实→进度的进程退出断点、重放/损坏/竞争页
+- `test_sync_protocol.py`：页规范序列化、完整性校验、订阅身份规范化
+- `test_sync_scale.py`：20 万消息长历史追赶、有界扫描证据、峰值 RSS < 256 MiB
 
 压力输入（如 2 万条 OBX 的消息）在运行时生成，不提交到仓库。
+
+## 结果订阅与下游副本（sync / replica）
+
+分析端不共享接收库，只间歇拿到一批本地页文件：先从既有接收库完成初始同步，
+再按提交进度追上新数据，中间接收端照常入仓。订阅固定一组发送方；页只携带
+命中消息的发送方、控制 ID、`received_at` 与全部结果的 OBR/OBX 坐标、观察代码
+系统及代码、子 ID、值类型、原值和单位（空串与 NULL 原样传递），不含原始帧、
+患者标识或备注。完整协议见 `docs/SYNC.md`。
+
+```bash
+# 一次性离线升级：为历史消息赋予持久提交顺序位置（接收服务已停止）
+python3 -m hl7recv sync upgrade --db /tmp/hl7.db
+# 取得当前发布上界（接收端可继续在线写入）
+python3 -m hl7recv sync watermark --db /tmp/hl7.db --sender 'LAB1^HOSP'
+# 从起点分段取到上界：每页扫描上限 --budget 条提交（含未命中的）
+python3 -m hl7recv sync page --db /tmp/hl7.db --sender 'LAB1^HOSP' \
+  --start 0 --bound 3 --budget 100 --output /tmp/pages/p1.json
+
+# 分析端：初始化副本、导入页、查看已到位置、消费已落地事实
+python3 -m hl7recv replica init --db /tmp/replica.db \
+  --source-id <watermark 输出的 source_id> --sender 'LAB1^HOSP'
+python3 -m hl7recv replica import --db /tmp/replica.db --page /tmp/pages/p1.json
+python3 -m hl7recv replica position --db /tmp/replica.db
+python3 -m hl7recv replica facts --db /tmp/replica.db
+# 独立参考核对（不调用产品分页/导入代码）
+python3 -m refcheck.sync_reference --receiver-db /tmp/hl7.db \
+  --replica-db /tmp/replica.db --sender 'LAB1^HOSP'
+```
+
+相同（源、订阅、起点、上界、预算）的重取字节相同——即使接收端继续写入、
+服务重启或执行过 `VACUUM`；上界不会被换成更晚水位。导入整页原子生效，
+重放已应用页无副作用，损坏/断档/错配页拒绝且不推进游标。
 
 ## 本地交班对账台账（shiftledger）
 

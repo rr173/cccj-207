@@ -111,6 +111,9 @@ CREATE TABLE IF NOT EXISTS results (
 );
 CREATE INDEX IF NOT EXISTS idx_results_patient
   ON results (patient_authority, patient_id);
+-- per-message fact lookup (results_for_message, sync page fetch)
+CREATE INDEX IF NOT EXISTS idx_results_message
+  ON results (sender, control_id);
 CREATE INDEX IF NOT EXISTS idx_results_placer ON results (placer_order);
 CREATE INDEX IF NOT EXISTS idx_results_filler ON results (filler_order);
 -- supports the audit tool's half-open [start, end) window scans
@@ -145,6 +148,18 @@ CREATE TABLE IF NOT EXISTS frame_errors (
   reason  TEXT NOT NULL,
   detail  TEXT,
   at      TEXT NOT NULL
+);
+-- Result-subscription metadata (see docs/SYNC.md).  The table always
+-- exists so new and upgraded databases share one schema, but positions
+-- are only assigned once the explicit offline upgrade has set
+-- meta.sync_enabled='1'.  ``seq`` is the durable commit-order position:
+-- dense, gap-free, assigned inside the same transaction as the message
+-- commit, and never reused or renumbered afterwards.
+CREATE TABLE IF NOT EXISTS sync_positions (
+  seq        INTEGER PRIMARY KEY,
+  sender     TEXT NOT NULL,
+  control_id TEXT NOT NULL,
+  UNIQUE (sender, control_id)
 );
 """
 
@@ -408,6 +423,7 @@ class Store:
                     "UPDATE inbox SET state=?, sender=?, control_id=? WHERE id=?",
                     (ST_COMMITTED, msg.sender, msg.control_id, attempt_id),
                 )
+                self._assign_sync_position(msg.sender, msg.control_id)
                 self._conn.commit()
                 return OUT_COMMITTED
             except Exception:
@@ -420,6 +436,53 @@ class Store:
                 "UPDATE inbox SET state=? WHERE id=?", (ST_ACKED, attempt_id)
             )
             self._conn.commit()
+
+    # -- result-subscription positions (docs/SYNC.md) ----------------------
+    def _assign_sync_position(self, sender: str, control_id: str) -> None:
+        """Assign the next durable commit-order position, in-transaction.
+
+        Must be called inside the message commit transaction.  No-op until
+        the offline sync upgrade has enabled publishing; afterwards every
+        new commit and its position become visible together, and a rolled
+        back commit also rolls the counter back, so published positions
+        stay dense and gap-free.  Duplicates and conflicts never reach
+        this path and therefore never consume a position.
+        """
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key='sync_enabled'"
+        ).fetchone()
+        if row is None or row[0] != "1":
+            return
+        seq = int(
+            self._conn.execute(
+                "SELECT value FROM meta WHERE key='sync_next_seq'"
+            ).fetchone()[0]
+        )
+        self._conn.execute(
+            "INSERT INTO sync_positions(seq, sender, control_id) VALUES (?,?,?)",
+            (seq, sender, control_id),
+        )
+        self._conn.execute(
+            "UPDATE meta SET value=? WHERE key='sync_next_seq'", (str(seq + 1),)
+        )
+
+    def sync_status(self) -> dict | None:
+        """Return publishing state, or None when sync was never enabled."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM meta WHERE key='sync_enabled'"
+            ).fetchone()
+            if row is None or row[0] != "1":
+                return None
+            source = self._conn.execute(
+                "SELECT value FROM meta WHERE key='sync_source_id'"
+            ).fetchone()[0]
+            nxt = int(
+                self._conn.execute(
+                    "SELECT value FROM meta WHERE key='sync_next_seq'"
+                ).fetchone()[0]
+            )
+            return {"source_id": source, "next_seq": nxt, "bound": nxt - 1}
 
     # -- queries -----------------------------------------------------------
     def list_messages(self) -> list[sqlite3.Row]:

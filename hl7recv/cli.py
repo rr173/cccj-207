@@ -95,6 +95,10 @@ def main(argv: list[str] | None = None) -> int:
     if len(argv) >= 1 and argv[0] == "audit":
         # delegate everything after the subcommand word to the audit parser
         return audit_main(argv[1:])
+    if len(argv) >= 1 and argv[0] in ("sync", "replica"):
+        from .sync.cli import replica_main, sync_main
+
+        return sync_main(argv[1:]) if argv[0] == "sync" else replica_main(argv[1:])
 
     ap = argparse.ArgumentParser(prog="hl7recv", description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
