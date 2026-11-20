@@ -20,10 +20,13 @@ hl7recv/            接收服务包
   faults.py        确定性故障注入点
   queries.py       查询 API（按消息 / 患者 / 订单，稳定排序）
   cli.py           命令行入口
+  audit/           本地数据质量审计（只读、两窗对照、确定性 JSON 报告）
 peer/               可复建的本地 MLLP 对端（发送方，支持分片/原始流）
 refcheck/           独立参考检查程序（不调用产品解析或写库代码）
+drills/             运行时生成的可复跑合成审计演练与示例策略
 tests/              单元测试、验收套件、进程退出演练、压力/内存检查
 docs/PROFILE.md     profile 说明（字段表、可空性、去重与提交语义）
+docs/AUDIT.md       审计策略格式、指标口径、报告契约与快照一致性说明
 ```
 
 ## 运行服务
@@ -68,6 +71,33 @@ python3 -m refcheck.reference --db /tmp/hl7.db msg1.hl7 msg2.hl7
 # 全部匹配时退出码 0 并打印 REFERENCE CHECK PASSED
 ```
 
+## 本地数据质量审计（只读，两窗对照）
+
+针对已确认入仓的结果事实，按版本化 JSON 策略对两个半开窗口
+`[start, end)`（基于消息 `received_at`）生成确定性 JSON 比较报告：
+接收/结果体量、必填/可选字段非空率、发送方/检验代码/OBX-2 基数、
+文本值长度分布与可解析数值分位点；每个异常都带阈值级别、分母/排除/
+不可解析计数和可回溯的来源坐标（发送方、控制 ID、OBR/OBX 序号）。
+空窗口、全空字段、无效策略或不适用指标显式标记为 `not_computable`，
+不会伪装成零异常。详见 `docs/AUDIT.md`。
+
+```bash
+python3 -m hl7recv audit --db /tmp/hl7.db --policy drills/audit_policy.example.json
+# 退出码：0 无异常 / 1 警戒 / 2 失败 / 3 无法计算 / 4 用法错误
+# --output PATH 写文件（缺省输出纯 JSON 到 stdout）；窗口也可由四个
+# --baseline-start/--baseline-end/--current-start/--current-end 显式给出
+```
+
+审计在 WAL 只读事务内固定单一逻辑快照，接收服务并发提交不会混合进同一
+报告；审计不修改接收库，拒绝/未确认的 inbox 记录不计入事实。
+
+可复跑合成演练（运行时生成数据，不提交大数据集）：
+
+```bash
+python3 -m drills.run_audit_drill --workdir /tmp/drill-run
+# 产品审计 + 独立参考核对（refcheck.audit_reference，不导入产品审计代码）
+```
+
 ## 测试与演练
 
 ```bash
@@ -82,5 +112,11 @@ python3 -m unittest discover -s tests -v
 - `test_recovery.py`：进程退出演练（提交前 / 提交后 ACK 前 / ACK 后 / 解析中 / 收帧后）
 - `test_stress.py`：运行时生成的大消息、流式分批内存检查
 - `test_cli.py`、`test_refcheck.py`：CLI 表面与独立对照
+- `test_audit_policy.py`：审计策略版本化与严格校验（无效策略无法伪装零异常）
+- `test_audit_drill.py`：两窗合成数据逐项手工推导、边界时间戳、证据溯源、退出码
+- `test_audit_rules.py`：各阈值规则族、窗口语义与不可计算判定
+- `test_audit_snapshot.py` / `test_audit_coexist.py`：快照固定、并发写入不混合、接收服务在线共存
+- `test_audit_reference.py`：独立参考核对及篡改检出
+- `test_audit_stress.py`：运行时大样本、有界内存/样例、稳定排序
 
 压力输入（如 2 万条 OBX 的消息）在运行时生成，不提交到仓库。

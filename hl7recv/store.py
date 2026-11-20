@@ -28,7 +28,7 @@ import json
 import sqlite3
 import threading
 from datetime import datetime, timezone
-from typing import Iterator
+from typing import Callable, Iterator
 
 from .builder import ParsedMessage
 
@@ -113,6 +113,8 @@ CREATE INDEX IF NOT EXISTS idx_results_patient
   ON results (patient_authority, patient_id);
 CREATE INDEX IF NOT EXISTS idx_results_placer ON results (placer_order);
 CREATE INDEX IF NOT EXISTS idx_results_filler ON results (filler_order);
+-- supports the audit tool's half-open [start, end) window scans
+CREATE INDEX IF NOT EXISTS idx_messages_received ON messages (received_at);
 CREATE TABLE IF NOT EXISTS notes (
   id         INTEGER PRIMARY KEY,
   sender     TEXT NOT NULL,
@@ -175,8 +177,18 @@ class Store:
     the database never mutates diagnostic state under a running server.
     """
 
-    def __init__(self, path: str, *, recover: bool = True) -> None:
+    def __init__(
+        self,
+        path: str,
+        *,
+        recover: bool = True,
+        clock: Callable[[], str] | None = None,
+    ) -> None:
         self.path = path
+        # Injectable clock: production keeps millisecond UTC; deterministic
+        # drills (and the audit feature's boundary tests) pass a fixed clock
+        # so message received_at values land on exact window boundaries.
+        self._clock = clock or _utcnow
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
@@ -249,7 +261,7 @@ class Store:
             cur = self._conn.execute(
                 "INSERT INTO inbox(conn_id, frame_no, received_at, sha256, state)"
                 " VALUES (?,?,?,?,?)",
-                (conn_id, frame_no, _utcnow(), digest, ST_RECEIVED),
+                (conn_id, frame_no, self._clock(), digest, ST_RECEIVED),
             )
             self._conn.commit()
             return int(cur.lastrowid)
@@ -261,7 +273,7 @@ class Store:
             self._conn.execute(
                 "INSERT INTO frame_errors(conn_id, offset, reason, detail, at)"
                 " VALUES (?,?,?,?,?)",
-                (conn_id, offset, _bound_text(reason), _bound_text(detail), _utcnow()),
+                (conn_id, offset, _bound_text(reason), _bound_text(detail), self._clock()),
             )
             self._conn.commit()
 
@@ -298,7 +310,7 @@ class Store:
         only be sent after this returns OUT_COMMITTED or OUT_DUPLICATE.
         """
         digest = hashlib.sha256(raw).hexdigest()
-        now = _utcnow()
+        now = self._clock()
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:

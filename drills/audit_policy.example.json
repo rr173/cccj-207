@@ -1,0 +1,103 @@
+{
+  "policy_version": 1,
+  "name": "synthetic-drill two-window quality policy",
+  "selection": {
+    "senders": ["LAB1^HOSP", "LAB2^HOSP"]
+  },
+  "windows": {
+    "baseline": {
+      "start": "2026-11-10T10:00:00.000+00:00",
+      "end": "2026-11-10T11:00:00.000+00:00"
+    },
+    "current": {
+      "start": "2026-11-10T11:00:00.000+00:00",
+      "end": "2026-11-10T12:00:00.000+00:00"
+    }
+  },
+  "limits": {
+    "max_samples_per_metric": 5,
+    "text_length_buckets": [1, 4, 8, 16, 32, 64, 128]
+  },
+  "metrics": [
+    {
+      "metric_id": "vol_messages",
+      "type": "message_count",
+      "rules": [
+        {"rule": "count_drop_gte", "severity": "failure", "parameter": 1},
+        {"rule": "current_to_baseline_ratio_below", "severity": "warning", "parameter": 0.8}
+      ]
+    },
+    {
+      "metric_id": "vol_results",
+      "type": "result_count",
+      "rules": [
+        {"rule": "count_drop_gte", "severity": "warning", "parameter": 2}
+      ]
+    },
+    {
+      "metric_id": "nn_units",
+      "type": "field_nonnull_rate",
+      "field": "units",
+      "rules": [
+        {"rule": "nonnull_rate_below", "severity": "failure", "parameter": 0.6},
+        {"rule": "nonnull_rate_drop_gte", "severity": "warning", "parameter": 0.2},
+        {"rule": "min_sample_size", "severity": "warning", "parameter": 10}
+      ]
+    },
+    {
+      "metric_id": "nn_observed_at",
+      "type": "field_nonnull_rate",
+      "field": "observed_at",
+      "rules": [
+        {"rule": "nonnull_rate_below", "severity": "warning", "parameter": 0.5}
+      ]
+    },
+    {
+      "metric_id": "nn_visit_id",
+      "type": "field_nonnull_rate",
+      "field": "visit_id",
+      "rules": []
+    },
+    {
+      "metric_id": "card_sender",
+      "type": "cardinality",
+      "dimension": "sender",
+      "rules": [
+        {"rule": "cardinality_drop_gte", "severity": "failure", "parameter": 1}
+      ]
+    },
+    {
+      "metric_id": "card_test_code",
+      "type": "cardinality",
+      "dimension": "test_code",
+      "rules": []
+    },
+    {
+      "metric_id": "card_obx2",
+      "type": "cardinality",
+      "dimension": "obx2_type",
+      "rules": [
+        {"rule": "cardinality_drop_gte", "severity": "failure", "parameter": 1}
+      ]
+    },
+    {
+      "metric_id": "text_lengths",
+      "type": "text_length_distribution",
+      "rules": [
+        {"rule": "fraction_over_length_gte", "severity": "warning", "parameter": 0.1},
+        {"rule": "max_length_gte", "severity": "failure", "parameter": 128},
+        {"rule": "min_sample_size", "severity": "warning", "parameter": 5}
+      ]
+    },
+    {
+      "metric_id": "nm_quantiles",
+      "type": "numeric_quantile_distribution",
+      "quantiles": [0.5, 0.9],
+      "rules": [
+        {"rule": "quantile_shift_gte", "severity": "warning", "parameter": 5.0},
+        {"rule": "unparseable_fraction_gte", "severity": "failure", "parameter": 0.3},
+        {"rule": "min_sample_size", "severity": "warning", "parameter": 4}
+      ]
+    }
+  ]
+}

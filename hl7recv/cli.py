@@ -22,6 +22,7 @@ import sys
 import threading
 
 from . import queries
+from .audit.cli import audit_main
 from .faults import POINTS, FaultInjector
 from .mllp import DEFAULT_MAX_FRAME
 from .server import MllpServer
@@ -89,6 +90,12 @@ def _cmd_query(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if len(argv) >= 1 and argv[0] == "audit":
+        # delegate everything after the subcommand word to the audit parser
+        return audit_main(argv[1:])
+
     ap = argparse.ArgumentParser(prog="hl7recv", description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
