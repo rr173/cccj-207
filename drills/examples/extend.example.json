@@ -1,0 +1,13 @@
+{
+  "ledger_id": "SHIFT-1",
+  "base_version": 2,
+  "requested_by": "op-zhang",
+  "new_cutoff": "2026-11-20T13:00:00+08:00",
+  "withdrawals": [
+    {
+      "action": "withdraw_lock",
+      "obs_key": "ANALYZER-A\u001fMSG-ONE\u001f1\u001f1",
+      "reason": "新到回传使原锁定失效，先撤回再随新批次重算"
+    }
+  ]
+}

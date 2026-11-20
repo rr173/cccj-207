@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+"""Runnable entry point that works under isolated Python (``-I`` friendly).
+
+``python -I`` removes the working directory from ``sys.path`` and ignores
+``PYTHONPATH``; this thin wrapper inserts the package root explicitly and
+then delegates to the ledger CLI.  Run it with the interpreter of choice::
+
+    python3 -I /workspace/bin/shiftledger register ...
+    python3 /workspace/bin/shiftledger overview ...
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from shiftledger.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main())

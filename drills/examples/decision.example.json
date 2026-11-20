@@ -1,0 +1,19 @@
+{
+  "ledger_id": "SHIFT-1",
+  "base_version": 1,
+  "requested_by": "op-zhang",
+  "actions": [
+    {
+      "action": "assign_group",
+      "group_key": "ANALYZER-A\u001fMSG-SHARED\u001f1",
+      "work_order_id": "WO2",
+      "reason": "共享号经核对确认归属第二张工单"
+    },
+    {
+      "action": "lock_observation",
+      "obs_key": "ANALYZER-A\u001fMSG-ONE\u001f1\u001f1",
+      "item_id": "WO1-X",
+      "reason": "把专属回传锁定到第一张工单的 X 应收项"
+    }
+  ]
+}
